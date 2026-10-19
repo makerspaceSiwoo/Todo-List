@@ -1,6 +1,12 @@
 import { emptyDay, applyOperation, type Day, type Operation } from './schedule';
 
 type Fields = Record<string, string>;
+function redisConfig() {
+  return {
+    url: process.env.UPSTASH_REDIS_REST_URL || import.meta.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL || import.meta.env.KV_REST_API_URL,
+    token: process.env.UPSTASH_REDIS_REST_TOKEN || import.meta.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN || import.meta.env.KV_REST_API_TOKEN,
+  };
+}
 function fromFields(date: string, fields: Fields): Day {
   const day = emptyDay(date);
   for (let i = 0; i < 10; i++) {
@@ -16,8 +22,7 @@ function fieldsFor(op: Operation): Fields {
   return { [`${op.type}:${op.index}`]: String(op.value) };
 }
 async function redis(command: unknown[]): Promise<unknown> {
-  const url = import.meta.env.UPSTASH_REDIS_REST_URL || process.env.UPSTASH_REDIS_REST_URL;
-  const token = import.meta.env.UPSTASH_REDIS_REST_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN;
+  const { url, token } = redisConfig();
   const response = await fetch(url, {
     method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify(command), signal: AbortSignal.timeout(8000),
@@ -34,8 +39,7 @@ return redis.call('HGETALL', KEYS[1])
 `;
 let localQueue: Promise<unknown> = Promise.resolve();
 export async function accessDay(date: string, op?: Operation): Promise<{ day: Day; storage: 'local' | 'cloud' }> {
-  const url = import.meta.env.UPSTASH_REDIS_REST_URL || process.env.UPSTASH_REDIS_REST_URL;
-  const token = import.meta.env.UPSTASH_REDIS_REST_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN;
+  const { url, token } = redisConfig();
   const namespace = process.env.SCHEDULE_NAMESPACE || import.meta.env.SCHEDULE_NAMESPACE || process.env.VERCEL_ENV || import.meta.env.VERCEL_ENV || 'development';
   if (url && token) {
     const key = `daypiece:${namespace}:${date}`;

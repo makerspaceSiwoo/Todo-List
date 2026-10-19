@@ -34,8 +34,10 @@ npm run dev
 
    | 변수 | 값 |
    | --- | --- |
-   | `UPSTASH_REDIS_REST_URL` | Redis REST URL |
-   | `UPSTASH_REDIS_REST_TOKEN` | 읽기·쓰기 가능한 Redis REST token |
+   | `KV_REST_API_URL` | Marketplace가 자동 연결하는 Redis REST URL |
+   | `KV_REST_API_TOKEN` | Marketplace가 자동 연결하는 읽기·쓰기 Redis REST token |
+
+   Upstash 콘솔에서 직접 생성한 경우 `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` 이름도 지원합니다.
 
 4. 환경 변수 설정 후 Preview와 Production을 재배포합니다. 환경 변수에 `PUBLIC_` 접두사를 붙이면 안 됩니다. Redis 키는 각각 `daypiece:preview:날짜`, `daypiece:production:날짜`로 자동 분리됩니다. 필요하면 환경별 `SCHEDULE_NAMESPACE`로 저장 공간을 명시할 수 있습니다.
 5. `develop` Preview에서 확인한 뒤 PR을 `main`에 병합하면 Production에 자동 배포됩니다.
