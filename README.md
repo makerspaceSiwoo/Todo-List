@@ -2,6 +2,11 @@
 
 Astro + TypeScript로 만든 로그인 없는 개인용 일일 시간표입니다. Vercel Functions와 Upstash Redis를 이용하므로 직접 운영하는 서버 없이 여러 컴퓨터에서 같은 시간표를 공유합니다.
 
+- [Production · main](https://todo-list-mauve-beta.vercel.app)
+- [Preview · develop](https://todo-list-git-develop-seeyouspace0-5824s-projects.vercel.app)
+
+두 환경의 데이터는 분리되어 있습니다. 개인 Vercel 프로젝트 `todo-list`와 무료 Upstash Redis `daypiece-shared`를 사용하며, Redis의 자동 유료 업그레이드는 비활성화되어 있습니다.
+
 ## 사용법
 
 - 직장·학교 5개(`a`–`e`), 개인 5개(`가`–`마`)를 입력합니다. 서로 다른 파스텔 색상 10개가 고정 배정됩니다.
