@@ -1,0 +1,59 @@
+---
+import { COLORS, LABELS, slotTime } from '../lib/schedule';
+import '../styles/global.css';
+export const prerender = true;
+---
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#f7f8fc" />
+    <meta name="description" content="하루의 시간을 한 조각씩. 할 일과 시간을 함께 정리하는 나의 데일리 플래너." />
+    <title>Daypiece — 나의 하루, 한 조각씩</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="site-header">
+        <a class="brand" href="/" aria-label="Daypiece 홈"><img src="/favicon.svg" width="34" height="34" alt="" /><span>daypiece<span class="brand-dot">.</span></span></a>
+        <div class="header-note">나의 하루, 한 조각씩</div>
+        <div class="sync" role="status" aria-live="polite"><span class="status-dot"></span><span id="sync-status">연결 중</span><button id="retry" hidden>다시 시도</button></div>
+      </header>
+
+      <main>
+        <section class="intro">
+          <div><p class="eyebrow">MAKE ROOM FOR YOUR DAY</p><h1>오늘도, 나만의 속도로<span>.</span></h1><p class="intro-copy">해야 할 일도, 나를 위한 시간도. 한 칸씩 채워보세요.</p></div>
+          <div class="date-nav"><button id="prev-day" class="icon-button" aria-label="이전 날짜">‹</button><div class="date-display"><span id="weekday">MY DAILY PLANNER</span><label class="date-picker"><span id="date-label"></span><input id="date" type="date" aria-label="날짜 선택" /></label></div><button id="next-day" class="icon-button" aria-label="다음 날짜">›</button><button id="today" class="today-button">오늘</button></div>
+        </section>
+
+        <div id="connection-notice" class="connection-notice" role="status" hidden></div>
+        <div class="workspace">
+          <section class="card schedule-card" aria-labelledby="schedule-title">
+            <div class="card-heading"><div><span class="section-index">01</span><h2 id="schedule-title">오늘의 시간</h2><span class="count-pill">07:00 — 24:00</span></div><label class="lock-control"><span id="lock-label">편집 가능</span><input id="lock" type="checkbox" role="switch" aria-label="시간표 잠금" /><span class="switch"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5 7V5a3 3 0 0 1 6 0v2M4 7h8v6H4z" /></svg></span></label></div>
+            <div class="schedule-topline"><span>TIME</span><span>00 — 30분</span><span>30 — 60분</span></div>
+            <div class="timetable" id="timetable" aria-label="시간표, 짧게 클릭하면 1시간, 길게 누르거나 드래그하면 30분 단위">
+              {Array.from({ length: 17 }, (_, row) => <div class="time-row"><span class="hour-label">{String(row + 7).padStart(2, '0')}<small>:00</small></span><div class="hour-cells">{[0, 1].map(half => <button class="time-cell" data-slot={row * 2 + half} aria-label={`${slotTime(row * 2 + half)}–${slotTime(row * 2 + half + 1)} 비어 있음`}><span class="cell-label"></span><span class="cell-time">{slotTime(row * 2 + half)}</span></button>)}</div></div>)}
+            </div>
+            <div class="schedule-bottom"><span>24<small>:00</small></span><span>하루의 끝, 내일의 시작.</span></div>
+            <div class="gesture-guide"><span><i class="gesture-click"></i>클릭 <b>1시간</b></span><span><i class="gesture-hold"></i>홀드 · 드래그 <b>30분</b></span><span>같은 색을 다시 선택하면 지워져요</span></div>
+          </section>
+
+          <aside class="right-column">
+            <section class="card todo-card" aria-labelledby="todo-title">
+              <div class="card-heading"><div><span class="section-index">02</span><h2 id="todo-title">오늘의 할 일</h2></div><span id="task-count" class="count-pill">0 / 0 완료</span></div>
+              <p class="todo-instruction">할 일을 선택하고, 왼쪽에 시간을 그려보세요.</p>
+              {[{ title: '직장 · 학교', subtitle: 'WORK & STUDY', start: 0, icon: '▣' }, { title: '개인', subtitle: 'JUST FOR ME', start: 5, icon: '✧' }].map(group => <section class="task-group" aria-label={group.title}><div class="group-heading"><h3><span aria-hidden="true">{group.icon}</span>{group.title}</h3><span>{group.subtitle}</span></div><ol class="task-list">{Array.from({ length: 5 }, (_, i) => { const index = group.start + i; return <li class="task-item" data-task={index} style={`--task-color: ${COLORS[index]}`}><input class="task-check" type="checkbox" data-check={index} aria-label={`${group.title} ${LABELS[index]} 완료`} /><div class="task-block"><input class="task-input" type="text" maxlength="200" data-input={index} aria-label={`${group.title} ${LABELS[index]} 할 일`} placeholder={i === 0 ? (index === 0 ? '가장 먼저 할 일은 무엇인가요?' : '나를 위한 작은 계획을 적어보세요') : '할 일을 적어주세요'} /><button class="task-select" data-select={index} aria-label={`${group.title} ${LABELS[index]} 시간 배정`} aria-pressed="false">{LABELS[index]}</button></div></li>; })}</ol></section>)}
+              <div class="other-wrap"><button id="other" class="other-button" aria-pressed="false"><span class="other-dot"></span>기타<span class="other-subtitle">쉬는 시간도 소중하니까</span></button></div>
+            </section>
+
+            <section class="card summary-card" aria-labelledby="summary-title"><div class="summary-heading"><h2 id="summary-title">하루의 조각들</h2><span id="completion-percent">0%</span></div><div class="day-meter" aria-label="오늘의 시간 배정 현황">{Array.from({ length: 34 }, (_, index) => <span data-meter={index}></span>)}</div><div class="summary-stats"><div><span>계획한 시간</span><strong id="planned-hours">0<small>시간</small></strong></div><div><span>완료한 시간</span><strong id="done-hours">0<small>시간</small></strong></div><div><span>남은 여백</span><strong id="free-hours">17<small>시간</small></strong></div></div><p>빈칸이 있어도 괜찮아요. 당신의 하루니까요.</p></section>
+            <div class="selection-note" id="selection-note" role="status"><span class="selection-dot"></span><span>할 일을 선택하면 시간에 색을 입힐 수 있어요.</span></div>
+          </aside>
+        </div>
+        <footer><span>조금씩 채워가는, 나다운 하루.</span><span>DAYPIECE <span class="footer-spark">✳</span> EVERY DAY IS A FRESH START</span></footer>
+      </main>
+    </div>
+    <script>import '../scripts/planner';</script>
+  </body>
+</html>
