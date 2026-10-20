@@ -1,10 +1,12 @@
-import { COLORS, LABELS, TASK_IDS, SLOT_COUNT, emptyDay, applyOperation, slotTime, today, validOperation, type Day, type Operation, type DayResponse } from '../lib/schedule';
+import { COLORS, LABELS, TASK_IDS, SLOT_COUNT, emptyDay, applyOperation, slotTime, today, validOperation, type Day, type Operation, type DayResponse, type TaskGroup, type CarryoverResult } from '../lib/schedule';
 
 const $ = <T extends HTMLElement>(selector: string) => document.querySelector<T>(selector)!;
 const cells = [...document.querySelectorAll<HTMLButtonElement>('[data-slot]')];
 const inputs = [...document.querySelectorAll<HTMLInputElement>('[data-input]')];
 const checks = [...document.querySelectorAll<HTMLInputElement>('[data-check]')];
 const selects = [...document.querySelectorAll<HTMLButtonElement>('[data-select]')];
+const carryoverButtons = [...document.querySelectorAll<HTMLButtonElement>('[data-carryover]')];
+const carryoverMessages = new Map<string, string>();
 const dateInput = $<HTMLInputElement>('#date');
 const grid = $('#timetable');
 const lock = $<HTMLInputElement>('#lock');
@@ -69,14 +71,22 @@ function render(): void {
   inputs.forEach((input, i) => {
     const task = day.tasks[i]!;
     if (input.value !== task.text) input.value = task.text;
-    input.disabled = !isReady;
+    const importing = (pending[date] || []).some(entry => entry.operation.type === 'carryover' && entry.operation.group === (i < 5 ? 'work' : 'personal'));
+    input.disabled = !isReady || importing;
     checks[i]!.checked = task.done;
-    checks[i]!.disabled = !isReady;
-    selects[i]!.disabled = !isReady;
+    checks[i]!.disabled = !isReady || importing;
+    selects[i]!.disabled = !isReady || importing;
     const item = input.closest('.task-item')!;
     item.classList.toggle('selected', selected === TASK_IDS[i]);
     item.classList.toggle('done', task.done);
     selects[i]!.setAttribute('aria-pressed', String(selected === TASK_IDS[i]));
+  });
+  carryoverButtons.forEach(button => {
+    const group = button.dataset.carryover as TaskGroup;
+    const importing = (pending[date] || []).some(entry => entry.operation.type === 'carryover' && entry.operation.group === group);
+    button.disabled = !isReady || importing;
+    button.textContent = importing ? '가져오는 중…' : '이어하기';
+    $(`#carryover-status-${group}`).textContent = importing ? '어제의 미완료 작업을 가져오고 있어요.' : carryoverMessages.get(`${date}:${group}`) || '';
   });
   $('#other').setAttribute('aria-pressed', String(selected === 'other'));
   cells.forEach((cell, i) => {
@@ -145,6 +155,9 @@ async function pump(): Promise<void> {
       inFlight = entry.id;
       const result = await request(key, entry.operation);
       accept(result);
+      if (entry.operation.type === 'carryover' && result.carryover) {
+        carryoverMessages.set(`${key}:${entry.operation.group}`, carryoverMessage(result.carryover));
+      }
       pending[key] = pending[key]!.filter(item => item.id !== entry.id);
       if (!pending[key]!.length) delete pending[key];
       persist();
@@ -153,6 +166,12 @@ async function pump(): Promise<void> {
     }
   } catch (cause) { error = cause instanceof Error ? cause.message : '변경 사항을 저장하지 못했습니다.'; }
   finally { busy = false; inFlight = null; syncStatus(); }
+}
+function carryoverMessage(result: CarryoverResult): string {
+  if (!result.total) return '어제 미완료 작업이 없어요.';
+  if (result.imported) return `어제 미완료 작업 ${result.imported}개를 가져왔어요.${result.remaining ? ` 빈칸이 부족해 ${result.remaining}개는 가져오지 못했어요.` : ''}`;
+  if (result.remaining) return `빈칸이 부족해 ${result.remaining}개를 가져오지 못했어요. 오늘 할 일은 그대로 유지했어요.`;
+  return '어제 미완료 작업이 이미 목록에 있어요.';
 }
 function enqueue(operation: Operation, delay = 0): void {
   const list = pending[date] ||= [];
@@ -174,6 +193,11 @@ inputs.forEach((input, index) => {
 selects.forEach((button, index) => button.addEventListener('click', () => select(TASK_IDS[index]!)));
 checks.forEach((check, index) => check.addEventListener('change', () => enqueue({ type: 'done', index, value: check.checked })));
 $('#other').addEventListener('click', () => select('other'));
+carryoverButtons.forEach(button => button.addEventListener('click', () => {
+  const group = button.dataset.carryover as TaskGroup;
+  if (!ready.has(date) || button.disabled) return;
+  enqueue({ type: 'carryover', group });
+}));
 
 function canPaint(): boolean { return !!selected && !lock.checked && ready.has(date); }
 function slotAt(x: number, y: number): number | null {
