@@ -207,3 +207,120 @@ test('mobile layout fits viewport and touch supports a half-hour hold', async ({
   await expect(page.locator('[data-slot="1"]')).toHaveAttribute('data-filled','false');
   await context.close();
 });
+
+async function changeTask(request: APIRequestContext, date: string, index: number, text: string, done = false) {
+  for (const data of [{ type: 'text', index, value: text }, { type: 'done', index, value: done }]) {
+    expect((await request.patch(`/api/day?date=${date}`, { data })).ok()).toBe(true);
+  }
+}
+function before(date: string, days = 1) {
+  const d = new Date(`${date}T12:00:00Z`);
+  d.setUTCDate(d.getUTCDate() - days);
+  return d.toISOString().slice(0, 10);
+}
+
+test('carryover imports only the chosen group of yesterday unfinished tasks and remains editable', async ({ page, request }) => {
+  const date = testDate();
+  const yesterday = before(date);
+  await changeTask(request, yesterday, 0, '어제 직장 미완료');
+  await changeTask(request, yesterday, 1, '어제 직장 완료', true);
+  await changeTask(request, yesterday, 2, '   ');
+  await changeTask(request, yesterday, 3, '어제 직장 미완료');
+  await changeTask(request, yesterday, 4, '어제 또 다른 작업');
+  await changeTask(request, yesterday, 5, '어제 개인 미완료');
+  await changeTask(request, yesterday, 6, '어제 개인 완료', true);
+  await changeTask(request, before(date, 2), 2, '이틀 전 작업');
+  await changeTask(request, date, 0, '오늘 이미 작성한 작업');
+  await changeTask(request, date, 1, '', true);
+  await request.patch(`/api/day?date=${yesterday}`, { data: { type: 'slots', indices: [0, 1], value: 'task-0' } });
+  const original = await readDay(request, yesterday);
+  await openDay(page, date);
+  await page.locator('[data-carryover="work"]').click();
+  await expect(page.locator('#carryover-status-work')).toContainText('2개를 가져왔어요');
+  await expect(page.locator('[data-input="0"]')).toHaveValue('오늘 이미 작성한 작업');
+  await expect(page.locator('[data-input="1"]')).toHaveValue('어제 직장 미완료');
+  await expect(page.locator('[data-check="1"]')).not.toBeChecked();
+  await expect(page.locator('[data-input="2"]')).toHaveValue('어제 또 다른 작업');
+  await expect(page.locator('[data-input="3"]')).toHaveValue('');
+  await expect(page.locator('[data-input="5"]')).toHaveValue('');
+  expect((await readDay(request, date)).slots.every((slot: string | null) => slot === null)).toBe(true);
+  await page.locator('[data-carryover="work"]').click();
+  await expect(page.locator('#carryover-status-work')).toContainText('이미 목록에 있어요');
+  await page.locator('[data-carryover="personal"]').click();
+  await expect(page.locator('[data-input="5"]')).toHaveValue('어제 개인 미완료');
+  await expect(page.locator('[data-input="6"]')).toHaveValue('');
+  await page.locator('[data-input="1"]').fill('가져온 뒤 수정한 작업');
+  await page.locator('[data-input="1"]').blur();
+  await expect.poll(async () => (await readDay(request, date)).tasks[1].text).toBe('가져온 뒤 수정한 작업');
+  expect(await readDay(request, yesterday)).toEqual(original);
+});
+
+test('carryover stops at yesterday when it is empty and never falls back to older days', async ({ page, request }) => {
+  const date = testDate();
+  await changeTask(request, before(date, 2), 0, '이틀 전 직장 작업');
+  await changeTask(request, before(date, 3), 5, '사흘 전 개인 작업');
+  await openDay(page, date);
+  for (const group of ['work', 'personal']) {
+    await page.locator(`[data-carryover="${group}"]`).click();
+    await expect(page.locator(`#carryover-status-${group}`)).toHaveText('어제 미완료 작업이 없어요.');
+  }
+  expect((await readDay(request, date)).tasks.every((task: { text: string }) => !task.text)).toBe(true);
+});
+
+test('carryover preserves full and partial lists and concurrent calls do not duplicate tasks', async ({ page, request }) => {
+  const date = testDate();
+  for (let i = 0; i < 5; i++) {
+    await changeTask(request, date, i, `오늘 직장 ${i}`);
+    await changeTask(request, before(date), i, `어제 직장 ${i}`);
+  }
+  await changeTask(request, date, 5, '중복 개인 작업');
+  await changeTask(request, date, 6, '오늘 개인 1');
+  await changeTask(request, date, 7, '오늘 개인 2');
+  await changeTask(request, before(date), 5, '중복 개인 작업');
+  await changeTask(request, before(date), 6, '개인 가져오기 1');
+  await changeTask(request, before(date), 7, '개인 가져오기 2');
+  await changeTask(request, before(date), 8, '개인 가져오기 3');
+  await openDay(page, date);
+  await page.locator('[data-carryover="work"]').click();
+  await expect(page.locator('#carryover-status-work')).toContainText('빈칸이 부족해 5개');
+  expect((await readDay(request, date)).tasks.slice(0, 5).map((task: { text: string }) => task.text)).toEqual(Array.from({ length: 5 }, (_, i) => `오늘 직장 ${i}`));
+  const responses = await Promise.all(Array.from({ length: 2 }, () => request.patch(`/api/day?date=${date}`, { data: { type: 'carryover', group: 'personal' } })));
+  const results = await Promise.all(responses.map(response => response.json()));
+  expect(results.reduce((sum, result) => sum + result.carryover.imported, 0)).toBe(2);
+  expect((await readDay(request, date)).tasks.slice(5).map((task: { text: string }) => task.text)).toEqual(['중복 개인 작업', '오늘 개인 1', '오늘 개인 2', '개인 가져오기 1', '개인 가져오기 2']);
+});
+
+test('carryover saves a newly typed today task before importing and handles year boundaries', async ({ page, request }) => {
+  const date = '2040-01-01';
+  await changeTask(request, '2039-12-31', 0, '작년 마지막 날 미완료');
+  await changeTask(request, '2039-12-30', 1, '이틀 전 제외');
+  await openDay(page, date);
+  await page.locator('[data-input="0"]').fill('방금 작성한 오늘 작업');
+  await page.locator('[data-carryover="work"]').click();
+  await expect(page.locator('#carryover-status-work')).toContainText('1개를 가져왔어요');
+  await expect(page.locator('[data-input="0"]')).toHaveValue('방금 작성한 오늘 작업');
+  await expect(page.locator('[data-input="1"]')).toHaveValue('작년 마지막 날 미완료');
+  await expect(page.locator('[data-input="2"]')).toHaveValue('');
+});
+
+test('carryover response stays on its original day when navigating during import', async ({ page, request }) => {
+  const date = testDate();
+  await changeTask(request, before(date), 0, '날짜 이동 중 가져오기');
+  await openDay(page, date);
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  await page.route('**/api/day?*', async route => {
+    if (route.request().method() === 'PATCH' && route.request().postDataJSON().type === 'carryover') await gate;
+    await route.continue();
+  });
+  await page.locator('[data-carryover="work"]').click();
+  await expect(page.locator('[data-carryover="work"]')).toBeDisabled();
+  await page.locator('#next-day').click();
+  release();
+  await expect.poll(async () => (await readDay(request, date)).tasks[0].text).toBe('날짜 이동 중 가져오기');
+  await expect(page.locator('[data-input="0"]')).toHaveValue('');
+  await expect(page.locator('#carryover-status-work')).toHaveText('');
+  await page.locator('#prev-day').click();
+  await expect(page.locator('[data-input="0"]')).toHaveValue('날짜 이동 중 가져오기');
+  expect((await request.patch(`/api/day?date=${date}`, { data: { type: 'carryover', group: 'unknown' } })).status()).toBe(400);
+});
