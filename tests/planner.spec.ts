@@ -267,7 +267,7 @@ test('carryover stops at yesterday when it is empty and never falls back to olde
   expect((await readDay(request, date)).tasks.every((task: { text: string }) => !task.text)).toBe(true);
 });
 
-test('carryover preserves full and partial lists and concurrent calls do not duplicate tasks', async ({ page, request }) => {
+test('carryover grows full and partial lists and concurrent calls do not duplicate tasks', async ({ page, request }) => {
   const date = testDate();
   for (let i = 0; i < 5; i++) {
     await changeTask(request, date, i, `오늘 직장 ${i}`);
@@ -282,11 +282,13 @@ test('carryover preserves full and partial lists and concurrent calls do not dup
   await changeTask(request, before(date), 8, '개인 가져오기 3');
   await openDay(page, date);
   await page.locator('[data-carryover="work"]').click();
-  await expect(page.locator('#carryover-status-work')).toContainText('빈칸이 부족해 5개');
+  await expect(page.locator('#carryover-status-work')).toContainText('5개를 가져왔어요');
+  await expect(page.locator('[data-task-group="work"] .task-item')).toHaveCount(10);
   expect((await readDay(request, date)).tasks.slice(0, 5).map((task: { text: string }) => task.text)).toEqual(Array.from({ length: 5 }, (_, i) => `오늘 직장 ${i}`));
   const responses = await Promise.all(Array.from({ length: 2 }, () => request.patch(`/api/day?date=${date}`, { data: { type: 'carryover', group: 'personal' } })));
   const results = await Promise.all(responses.map(response => response.json()));
-  expect(results.reduce((sum, result) => sum + result.carryover.imported, 0)).toBe(2);
+  expect(results.reduce((sum, result) => sum + result.carryover.imported, 0)).toBe(3);
+  expect((await readDay(request, date)).extras.filter((task: { id: string }) => task.id.startsWith('personal-')).map((task: { text: string }) => task.text)).toEqual(['개인 가져오기 3']);
   expect((await readDay(request, date)).tasks.slice(5).map((task: { text: string }) => task.text)).toEqual(['중복 개인 작업', '오늘 개인 1', '오늘 개인 2', '개인 가져오기 1', '개인 가져오기 2']);
 });
 
@@ -323,4 +325,105 @@ test('carryover response stays on its original day when navigating during import
   await page.locator('#prev-day').click();
   await expect(page.locator('[data-input="0"]')).toHaveValue('날짜 이동 중 가져오기');
   expect((await request.patch(`/api/day?date=${date}`, { data: { type: 'carryover', group: 'unknown' } })).status()).toBe(400);
+});
+
+async function addTask(page: Page, group: 'work' | 'personal') {
+  const rows = page.locator(`[data-task-group="${group}"] [data-extra]`);
+  const count = await rows.count();
+  await page.locator(`[data-add="${group}"]`).click();
+  await expect(rows).toHaveCount(count + 1);
+  return (await rows.last().getAttribute('data-task'))!;
+}
+
+test('each group keeps five base rows and allows up to ten with a limit tooltip', async ({ page, request }) => {
+  const date = testDate();
+  await openDay(page, date);
+  for (const group of ['work', 'personal'] as const) {
+    await expect(page.locator(`[data-task-group="${group}"] .task-item`)).toHaveCount(5);
+    await expect(page.locator(`[data-task-group="${group}"] [data-remove]`)).toHaveCount(0);
+    for (let i = 0; i < 5; i++) await addTask(page, group);
+    await expect(page.locator(`[data-add="${group}"]`)).toBeDisabled();
+    await page.locator(`[data-add-control="${group}"]`).hover();
+    await expect(page.locator(`#task-limit-${group}`)).toBeVisible();
+    await expect(page.locator(`#task-limit-${group}`)).toHaveText('할 일은 최대 10개까지 생성 가능합니다');
+  }
+  await expect(page.locator('.task-item')).toHaveCount(20);
+  await expect.poll(async () => (await readDay(request, date)).extras.length).toBe(10);
+  const first = page.locator('[data-task-group="work"] [data-remove]').first();
+  await first.click();
+  await expect(page.locator('[data-add="work"]')).toBeEnabled();
+  await expect(page.locator('[data-add="personal"]')).toBeDisabled();
+  await expect(page.locator('[data-task-group="work"] .task-item')).toHaveCount(9);
+  await addTask(page, 'work');
+  await expect(page.locator('[data-add="work"]')).toBeDisabled();
+  expect((await request.patch(`/api/day?date=${date}`, { data: { type: 'remove', id: 'task-0' } })).status()).toBe(400);
+});
+
+test('deleting an extra clears its schedule but preserves other IDs colors and completion', async ({ page, request }) => {
+  const date = testDate();
+  await openDay(page, date);
+  const a = await addTask(page, 'work');
+  await page.locator(`[data-input="${a}"]`).fill('삭제할 작업');
+  await page.locator('[data-slot="0"]').click();
+  const b = await addTask(page, 'work');
+  await page.locator(`[data-input="${b}"]`).fill('유지할 작업');
+  await page.locator('[data-slot="2"]').click();
+  await page.locator(`[data-check="${b}"]`).check();
+  const color = await page.locator(`[data-task="${b}"]`).evaluate(el => (el as HTMLElement).style.getPropertyValue('--task-color'));
+  await page.locator(`[data-remove="${a}"]`).click();
+  await expect(page.locator(`[data-task="${a}"]`)).toHaveCount(0);
+  await expect(page.locator(`[data-input="${b}"]`)).toHaveValue('유지할 작업');
+  await expect(page.locator(`[data-check="${b}"]`)).toBeChecked();
+  await expect(page.locator(`[data-select="${b}"]`)).toHaveText('f');
+  expect(await page.locator(`[data-task="${b}"]`).evaluate(el => (el as HTMLElement).style.getPropertyValue('--task-color'))).toBe(color);
+  await expect.poll(async () => (await readDay(request, date)).slots.slice(0, 4)).toEqual([null, null, b, b]);
+  await request.patch(`/api/day?date=${date}`, { data: { type: 'extra-text', id: a, value: '삭제 후 오래된 편집' } });
+  await request.patch(`/api/day?date=${date}`, { data: { type: 'slots', indices: [0], value: a } });
+  const saved = await readDay(request, date);
+  expect(saved.extras.some((task: { id: string }) => task.id === a)).toBe(false);
+  expect(saved.slots[0]).toBe(null);
+  await page.reload();
+  await expect(page.locator('[data-input="0"]')).toBeEnabled();
+  await page.locator('#date').fill(date);
+  await page.locator('#date').dispatchEvent('change');
+  await expect(page.locator(`[data-input="${b}"]`)).toHaveValue('유지할 작업');
+});
+
+test('carryover automatically creates two rows for seven unfinished tasks in each group', async ({ page, request }) => {
+  const date = testDate();
+  for (const group of ['work', 'personal'] as const) {
+    const start = group === 'work' ? 0 : 5;
+    for (let i = 0; i < 5; i++) await changeTask(request, before(date), start + i, `${group} 어제 ${i}`);
+    for (let i = 5; i < 7; i++) {
+      const id = `${group}-${crypto.randomUUID()}`;
+      await request.patch(`/api/day?date=${before(date)}`, { data: { type: 'add', group, id } });
+      await request.patch(`/api/day?date=${before(date)}`, { data: { type: 'extra-text', id, value: `${group} 어제 ${i}` } });
+    }
+  }
+  await openDay(page, date);
+  for (const group of ['work', 'personal'] as const) {
+    await page.locator(`[data-carryover="${group}"]`).click();
+    await expect(page.locator(`#carryover-status-${group}`)).toContainText('7개를 가져왔어요');
+    await expect(page.locator(`[data-task-group="${group}"] .task-item`)).toHaveCount(7);
+    await page.locator(`[data-carryover="${group}"]`).click();
+    await expect(page.locator(`#carryover-status-${group}`)).toContainText('이미 목록에 있어요');
+  }
+  await expect(page.locator('.task-item')).toHaveCount(14);
+  expect((await readDay(request, date)).extras.length).toBe(4);
+});
+
+test('server enforces ten per group under concurrent adds and carryover reports overflow', async ({ request }) => {
+  const date = testDate();
+  const ids = Array.from({ length: 9 }, () => `work-${crypto.randomUUID()}`);
+  await Promise.all(ids.map(id => request.patch(`/api/day?date=${date}`, { data: { type: 'add', group: 'work', id } })));
+  const saved = await readDay(request, date);
+  expect(saved.extras).toHaveLength(5);
+  for (let i = 0; i < 5; i++) await changeTask(request, date, i, `오늘 기본 ${i}`);
+  for (const task of saved.extras) await request.patch(`/api/day?date=${date}`, { data: { type: 'extra-text', id: task.id, value: `오늘 추가 ${task.id}` } });
+  await changeTask(request, before(date), 0, '가져오지 못할 작업');
+  const response = await request.patch(`/api/day?date=${date}`, { data: { type: 'carryover', group: 'work' } });
+  const result = await response.json();
+  expect(result.carryover).toEqual({ imported: 0, remaining: 1, duplicates: 0, total: 1 });
+  expect(result.day.extras).toHaveLength(5);
+  expect((await request.patch(`/api/day?date=${date}`, { data: { type: 'add', group: 'personal', id: ids[0] } })).status()).toBe(400);
 });

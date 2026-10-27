@@ -1,10 +1,7 @@
-import { COLORS, LABELS, TASK_IDS, SLOT_COUNT, emptyDay, applyOperation, slotTime, today, validOperation, type Day, type Operation, type DayResponse, type TaskGroup, type CarryoverResult } from '../lib/schedule';
+import { TASK_IDS, SLOT_COUNT, MAX_TASKS_PER_GROUP, allTasks, groupTasks, emptyDay, applyOperation, slotTime, today, validOperation, type Day, type Operation, type DayResponse, type TaskGroup, type CarryoverResult } from '../lib/schedule';
 
 const $ = <T extends HTMLElement>(selector: string) => document.querySelector<T>(selector)!;
 const cells = [...document.querySelectorAll<HTMLButtonElement>('[data-slot]')];
-const inputs = [...document.querySelectorAll<HTMLInputElement>('[data-input]')];
-const checks = [...document.querySelectorAll<HTMLInputElement>('[data-check]')];
-const selects = [...document.querySelectorAll<HTMLButtonElement>('[data-select]')];
 const carryoverButtons = [...document.querySelectorAll<HTMLButtonElement>('[data-carryover]')];
 const carryoverMessages = new Map<string, string>();
 const dateInput = $<HTMLInputElement>('#date');
@@ -55,12 +52,39 @@ function selectionNote(): void {
   const note = $('#selection-note');
   const text = note.querySelector('span:last-child')!;
   const dot = note.querySelector<HTMLElement>('.selection-dot')!;
-  const index = TASK_IDS.indexOf(selected || '');
-  dot.style.background = selected === 'other' ? '#d1d5df' : index >= 0 ? COLORS[index]! : '#d0d5e4';
-  text.textContent = lock.checked ? '잠금 모드예요. 시간을 편집하려면 잠금을 해제해 주세요.' : selected === 'other' ? '기타 선택 중 · 쉬는 시간과 여백을 그려보세요.' : index >= 0 ? `${LABELS[index]}. ${current().tasks[index]!.text || '아직 이름 없는 할 일'} · 시간을 선택해 주세요.` : '할 일을 선택하면 시간에 색을 입힐 수 있어요.';
+  const task = allTasks(current()).find(task => task.id === selected);
+  dot.style.background = selected === 'other' ? '#d1d5df' : task?.color || '#d0d5e4';
+  text.textContent = lock.checked ? '잠금 모드예요. 시간을 편집하려면 잠금을 해제해 주세요.' : selected === 'other' ? '기타 선택 중 · 쉬는 시간과 여백을 그려보세요.' : task ? `${task.label}. ${task.text || '아직 이름 없는 할 일'} · 시간을 선택해 주세요.` : '할 일을 선택하면 시간에 색을 입힐 수 있어요.';
+}
+function renderExtraRows(day: Day): void {
+  for (const group of ['work', 'personal'] as const) {
+    const list = $(`[data-task-group="${group}"] .task-list`);
+    const extras = groupTasks(day, group).filter(task => task.extra);
+    const ids = new Set(extras.map(task => task.id));
+    for (const row of list.querySelectorAll<HTMLElement>('[data-extra]')) if (!ids.has(row.dataset.task!)) row.remove();
+    extras.forEach((task, index) => {
+      let row = list.querySelector<HTMLElement>(`[data-task="${task.id}"]`);
+      if (!row) {
+        row = document.createElement('li');
+        row.className = 'task-item';
+        row.dataset.task = task.id;
+        row.dataset.extra = 'true';
+        row.innerHTML = '<input class="task-check" type="checkbox" /><div class="task-block"><input class="task-input" type="text" maxlength="200" placeholder="할 일을 적어주세요" /><button class="task-select" aria-pressed="false"></button></div><button class="task-remove" title="추가 할 일과 배정한 시간 삭제">×</button>';
+        row.querySelector<HTMLElement>('.task-check')!.dataset.check = task.id;
+        row.querySelector<HTMLElement>('.task-input')!.dataset.input = task.id;
+        row.querySelector<HTMLElement>('.task-select')!.dataset.select = task.id;
+        row.querySelector<HTMLElement>('.task-remove')!.dataset.remove = task.id;
+      }
+      if (list.children[index + 5] !== row) list.insertBefore(row, list.children[index + 5] || null);
+    });
+  }
 }
 function render(): void {
   const day = current();
+  const tasks = allTasks(day);
+  const byId = new Map(tasks.map(task => [task.id, task]));
+  if (selected && selected !== 'other' && !byId.has(selected)) selected = null;
+  renderExtraRows(day);
   const slots = gesture?.preview || day.slots;
   const isReady = ready.has(date);
   dateInput.value = date;
@@ -68,18 +92,42 @@ function render(): void {
   $('#date-label').textContent = new Intl.DateTimeFormat('ko-KR', { month: 'long', day: 'numeric', weekday: 'short', timeZone: 'Asia/Seoul' }).format(d);
   $('#weekday').textContent = new Intl.DateTimeFormat('en-US', { weekday: 'long', timeZone: 'Asia/Seoul' }).format(d).toUpperCase();
   $('#today').classList.toggle('active', date === today());
-  inputs.forEach((input, i) => {
-    const task = day.tasks[i]!;
+  tasks.forEach(task => {
+    const key = task.extra ? task.id : String(TASK_IDS.indexOf(task.id));
+    const input = $<HTMLInputElement>(`[data-input="${key}"]`);
+    const check = $<HTMLInputElement>(`[data-check="${key}"]`);
+    const select = $<HTMLButtonElement>(`[data-select="${key}"]`);
+    const importing = (pending[date] || []).some(entry => entry.operation.type === 'carryover' && entry.operation.group === task.group);
+    const disabled = !isReady || importing;
     if (input.value !== task.text) input.value = task.text;
-    const importing = (pending[date] || []).some(entry => entry.operation.type === 'carryover' && entry.operation.group === (i < 5 ? 'work' : 'personal'));
-    input.disabled = !isReady || importing;
-    checks[i]!.checked = task.done;
-    checks[i]!.disabled = !isReady || importing;
-    selects[i]!.disabled = !isReady || importing;
-    const item = input.closest('.task-item')!;
-    item.classList.toggle('selected', selected === TASK_IDS[i]);
+    input.disabled = disabled;
+    check.checked = task.done;
+    check.disabled = disabled;
+    select.disabled = disabled;
+    select.textContent = task.label;
+    const groupName = task.group === 'work' ? '직장 · 학교' : '개인';
+    input.setAttribute('aria-label', `${groupName} ${task.label} 할 일`);
+    check.setAttribute('aria-label', `${groupName} ${task.label} 완료`);
+    select.setAttribute('aria-label', `${groupName} ${task.label} 시간 배정`);
+    const item = input.closest<HTMLElement>('.task-item')!;
+    item.style.setProperty('--task-color', task.color);
+    item.classList.toggle('selected', selected === task.id);
     item.classList.toggle('done', task.done);
-    selects[i]!.setAttribute('aria-pressed', String(selected === TASK_IDS[i]));
+    select.setAttribute('aria-pressed', String(selected === task.id));
+    const remove = item.querySelector<HTMLButtonElement>('.task-remove');
+    if (remove) { remove.disabled = disabled; remove.setAttribute('aria-label', `${groupName} ${task.label} 추가 할 일 삭제`); }
+  });
+  document.querySelectorAll<HTMLButtonElement>('[data-add]').forEach(button => {
+    const group = button.dataset.add as TaskGroup;
+    const importing = (pending[date] || []).some(entry => entry.operation.type === 'carryover' && entry.operation.group === group);
+    const limited = groupTasks(day, group).length >= MAX_TASKS_PER_GROUP;
+    button.disabled = !isReady || importing || limited;
+    const control = button.closest<HTMLElement>('.add-task-control')!;
+    control.dataset.limit = String(limited);
+    control.tabIndex = limited ? 0 : -1;
+    if (limited) control.setAttribute('aria-describedby', `task-limit-${group}`);
+    else control.removeAttribute('aria-describedby');
+    button.title = limited ? '할 일은 최대 10개까지 생성 가능합니다' : '할 일 추가';
   });
   carryoverButtons.forEach(button => {
     const group = button.dataset.carryover as TaskGroup;
@@ -91,14 +139,13 @@ function render(): void {
   $('#other').setAttribute('aria-pressed', String(selected === 'other'));
   cells.forEach((cell, i) => {
     const id = slots[i] ?? null;
-    const taskIndex = TASK_IDS.indexOf(id || '');
-    const task = taskIndex >= 0 ? day.tasks[taskIndex] : undefined;
-    const color = task?.done ? '#eceef2' : id === 'other' ? '#dedfe5' : taskIndex >= 0 ? COLORS[taskIndex]! : '';
+    const task = byId.get(id || '');
+    const color = task?.done ? '#eceef2' : id === 'other' ? '#dedfe5' : task?.color || '';
     cell.style.backgroundColor = color;
     cell.dataset.filled = String(!!id);
     cell.dataset.done = String(!!task?.done);
     cell.disabled = lock.checked || !isReady;
-    const name = id === 'other' ? '기타' : task ? `${LABELS[taskIndex]}. ${task.text || '할 일'}` : '';
+    const name = id === 'other' ? '기타' : task ? `${task.label}. ${task.text || '할 일'}` : '';
     cell.querySelector('.cell-label')!.textContent = name;
     cell.setAttribute('aria-label', `${slotTime(i)}–${slotTime(i + 1)} ${name || '비어 있음'}${task?.done ? ' (완료)' : ''}`);
     cell.setAttribute('aria-pressed', String(!!id));
@@ -106,12 +153,12 @@ function render(): void {
     meter.style.backgroundColor = color;
     meter.title = `${slotTime(i)} ${name || '여백'}`;
   });
-  const written = day.tasks.filter(task => task.text.trim());
+  const written = tasks.filter(task => task.text.trim());
   const completed = written.filter(task => task.done).length;
   $('#task-count').textContent = `${completed} / ${written.length} 완료`;
   $('#completion-percent').textContent = `${written.length ? Math.round(completed / written.length * 100) : 0}%`;
   const occupied = slots.filter(Boolean).length / 2;
-  const done = slots.filter(id => id && TASK_IDS.includes(id) && day.tasks[TASK_IDS.indexOf(id)]?.done).length / 2;
+  const done = slots.filter(id => id && byId.get(id)?.done).length / 2;
   $('#planned-hours').innerHTML = `${occupied}<small>시간</small>`;
   $('#done-hours').innerHTML = `${done}<small>시간</small>`;
   $('#free-hours').innerHTML = `${17 - occupied}<small>시간</small>`;
@@ -169,15 +216,15 @@ async function pump(): Promise<void> {
 }
 function carryoverMessage(result: CarryoverResult): string {
   if (!result.total) return '어제 미완료 작업이 없어요.';
-  if (result.imported) return `어제 미완료 작업 ${result.imported}개를 가져왔어요.${result.remaining ? ` 빈칸이 부족해 ${result.remaining}개는 가져오지 못했어요.` : ''}`;
-  if (result.remaining) return `빈칸이 부족해 ${result.remaining}개를 가져오지 못했어요. 오늘 할 일은 그대로 유지했어요.`;
+  if (result.imported) return `어제 미완료 작업 ${result.imported}개를 가져왔어요.${result.remaining ? ` 최대 ${MAX_TASKS_PER_GROUP}개까지 담을 수 있어 ${result.remaining}개는 가져오지 못했어요.` : ''}`;
+  if (result.remaining) return `최대 ${MAX_TASKS_PER_GROUP}개까지 담을 수 있어 ${result.remaining}개를 가져오지 못했어요. 오늘 할 일은 그대로 유지했어요.`;
   return '어제 미완료 작업이 이미 목록에 있어요.';
 }
 function enqueue(operation: Operation, delay = 0): void {
   const list = pending[date] ||= [];
   // Only replace a not-yet-sent text edit. Never modify the request currently in flight.
   const previous = list.at(-1);
-  if (operation.type === 'text' && previous?.id !== inFlight && previous?.operation.type === 'text' && previous.operation.index === operation.index) previous.operation = operation;
+  if (previous?.id !== inFlight && ((operation.type === 'text' && previous?.operation.type === 'text' && previous.operation.index === operation.index) || (operation.type === 'extra-text' && previous?.operation.type === 'extra-text' && previous.operation.id === operation.id))) previous.operation = operation;
   else list.push({ id: crypto.randomUUID(), operation });
   persist();
   render();
@@ -185,13 +232,39 @@ function enqueue(operation: Operation, delay = 0): void {
   saveTimer = setTimeout(() => void pump(), delay);
 }
 function select(id: string): void { selected = id; render(); }
-inputs.forEach((input, index) => {
-  input.addEventListener('focus', () => select(TASK_IDS[index]!));
-  input.addEventListener('input', () => enqueue({ type: 'text', index, value: input.value }, 400));
-  input.addEventListener('blur', () => { clearTimeout(saveTimer); void pump(); });
+function taskId(key: string): string { return /^\d+$/.test(key) ? TASK_IDS[Number(key)]! : key; }
+const todoCard = $('.todo-card');
+todoCard.addEventListener('focusin', event => {
+  const input = event.target as HTMLElement;
+  if (input.matches('[data-input]')) select(taskId(input.dataset.input!));
 });
-selects.forEach((button, index) => button.addEventListener('click', () => select(TASK_IDS[index]!)));
-checks.forEach((check, index) => check.addEventListener('change', () => enqueue({ type: 'done', index, value: check.checked })));
+todoCard.addEventListener('input', event => {
+  const input = event.target as HTMLInputElement;
+  if (!input.matches('[data-input]')) return;
+  const key = input.dataset.input!;
+  enqueue(/^\d+$/.test(key) ? { type: 'text', index: Number(key), value: input.value } : { type: 'extra-text', id: key, value: input.value }, 400);
+});
+todoCard.addEventListener('focusout', event => {
+  if ((event.target as HTMLElement).matches('[data-input]')) { clearTimeout(saveTimer); void pump(); }
+});
+todoCard.addEventListener('change', event => {
+  const check = event.target as HTMLInputElement;
+  if (!check.matches('[data-check]')) return;
+  const key = check.dataset.check!;
+  enqueue(/^\d+$/.test(key) ? { type: 'done', index: Number(key), value: check.checked } : { type: 'extra-done', id: key, value: check.checked });
+});
+todoCard.addEventListener('click', event => {
+  const button = (event.target as HTMLElement).closest<HTMLButtonElement>('button');
+  if (!button || button.disabled) return;
+  if (button.dataset.select) select(taskId(button.dataset.select));
+  if (button.dataset.add) {
+    const group = button.dataset.add as TaskGroup;
+    const id = `${group}-${crypto.randomUUID()}`;
+    enqueue({ type: 'add', group, id });
+    document.querySelector<HTMLInputElement>(`[data-input="${id}"]`)?.focus();
+  }
+  if (button.dataset.remove) { cancelGesture(); enqueue({ type: 'remove', id: button.dataset.remove }); }
+});
 $('#other').addEventListener('click', () => select('other'));
 carryoverButtons.forEach(button => button.addEventListener('click', () => {
   const group = button.dataset.carryover as TaskGroup;
