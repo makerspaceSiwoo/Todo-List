@@ -427,3 +427,41 @@ test('server enforces ten per group under concurrent adds and carryover reports 
   expect(result.day.extras).toHaveLength(5);
   expect((await request.patch(`/api/day?date=${date}`, { data: { type: 'add', group: 'personal', id: ids[0] } })).status()).toBe(400);
 });
+
+test('long timetable labels stay ellipsized within equal half-hour cells at every breakpoint', async ({ page }) => {
+  for (const [offset, width] of [1280, 900, 390].entries()) {
+    await page.setViewportSize({ width, height: 1000 });
+    const date = new Date(`${testDate()}T12:00:00Z`);
+    date.setUTCDate(date.getUTCDate() + offset);
+    await openDay(page, date.toISOString().slice(0, 10));
+    const cell = page.locator('[data-slot="0"]');
+    const before = await cell.boundingBox();
+    for (const [index, title] of [
+      '아주 긴 작업 이름과 상세 설명을 시간표에 표시하는 경우 '.repeat(10).slice(0, 200),
+      'VeryLongTaskNameWithoutAnySpaces'.repeat(8).slice(0, 200),
+    ].entries()) {
+      await page.locator('[data-input="0"]').fill(title);
+      if (index === 0) await cell.click();
+      const label = cell.locator('.cell-label');
+      await expect(label).toHaveText(`a. ${title}`);
+      const layout = await cell.evaluate(el => {
+        const row = el.closest('.time-row')!.getBoundingClientRect();
+        const cells = el.parentElement!.getBoundingClientRect();
+        const left = el.getBoundingClientRect();
+        const right = el.nextElementSibling!.getBoundingClientRect();
+        const label = el.querySelector<HTMLElement>('.cell-label')!;
+        return { width: left.width, rightWidth: right.width, rowRight: row.right, cellsRight: cells.right,
+          documentWidth: document.documentElement.scrollWidth, viewport: innerWidth,
+          clipped: label.scrollWidth > label.clientWidth, ellipsis: getComputedStyle(label).textOverflow };
+      });
+      expect(Math.abs(layout.width - before!.width), `viewport ${width}, title ${index}`).toBeLessThan(1);
+      // The right cell has one extra border pixel; allow subpixel rounding.
+      expect(Math.abs(layout.width - layout.rightWidth)).toBeLessThan(1.1);
+      expect(layout.cellsRight).toBeLessThanOrEqual(layout.rowRight + 1);
+      expect(layout.documentWidth).toBeLessThanOrEqual(layout.viewport);
+      expect(layout.clipped).toBe(true);
+      expect(layout.ellipsis).toBe('ellipsis');
+      await expect(cell).toHaveAttribute('aria-label', new RegExp(title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    }
+  }
+});
